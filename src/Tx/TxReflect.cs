@@ -73,6 +73,36 @@ namespace BestAutoSort.Tx
             UpdateRowsMethod.Invoke(container, Array.Empty<object>());
         }
 
+        private static readonly FieldInfo LoadingField = AccessTools.Field(typeof(Container), "m_loading");
+
+        /// <summary>
+        /// Load the chest inventory from ZDO bytes with Container.m_loading set, like
+        /// vanilla Container.Load. A bare Inventory.Load fires Changed per item and the
+        /// owner's OnContainerChanged then Saves N times (N ZDO revisions, O(N^2)).
+        /// </summary>
+        internal static void LoadInventoryQuiet(Container container, ZPackage pkg)
+        {
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            bool flagged = false;
+            try
+            {
+                if (LoadingField != null)
+                {
+                    LoadingField.SetValue(container, true);
+                    flagged = true;
+                }
+                container.GetInventory().Load(pkg);
+            }
+            finally
+            {
+                if (flagged)
+                    LoadingField.SetValue(container, false);
+                sw.Stop();
+                if (sw.ElapsedMilliseconds > 100)
+                    TxLog.Warn("slow chest load: " + sw.ElapsedMilliseconds + " ms, items=" + container.GetInventory().NrOfItems());
+            }
+        }
+
         /// <summary>
         /// Safely cancel a drag sourced from the chest inventory (item stays in the chest — no loss).
         /// </summary>

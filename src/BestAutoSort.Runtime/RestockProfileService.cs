@@ -167,6 +167,19 @@ internal static class RestockProfileService
 		{
 			return;
 		}
+		if (ChainRunning)
+		{
+			// A remote chain is still filling the same targets: needs computed now
+			// would be requested twice (over-take, then compensation churn).
+			if (Time.realtimeSinceStartup - _chainStartedAt < ChainStaleAfter)
+			{
+				Plugin.LogInstance.LogInfo((object)"[ChestTX] restock skipped: previous restock chain still running");
+				return;
+			}
+			Plugin.LogInstance.LogWarning((object)"[ChestTX] restock chain stale, resetting");
+			RemoteChain.Clear();
+			ChainRunning = false;
+		}
 		List<RestockProfile> list = LoadProfiles(localPlayer);
 		SynchronizeLiveTargets(localPlayer, list);
 		if (list.Count == 0)
@@ -319,6 +332,8 @@ internal static class RestockProfileService
 
 	private static readonly Queue<RestockNeed> RemoteChain = new Queue<RestockNeed>();
 	private static bool ChainRunning;
+	private static float _chainStartedAt;
+	private const float ChainStaleAfter = 30f;
 
 	private static void EnqueueRemoteNeeds(Player player, List<RestockNeed> needs)
 	{
@@ -327,6 +342,7 @@ internal static class RestockProfileService
 		if (!ChainRunning)
 		{
 			ChainRunning = true;
+			_chainStartedAt = Time.realtimeSinceStartup;
 			PumpRemoteChain(player);
 		}
 	}

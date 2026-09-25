@@ -95,9 +95,9 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
-		ChestTxService.Pump();
-		AutoFeedService.Update();
-		NearbyPlaceIntent.Pump();
+		Timed("ChestTxService.Pump", ChestTxService.Pump);
+		Timed("AutoFeedService.Update", AutoFeedService.Update);
+		Timed("NearbyPlaceIntent.Pump", NearbyPlaceIntent.Pump);
 		NearbyResourceService.RepairInvalidPlayerInventoryPositions();
 		if (ChestUpgradeService.UpdateLegacyMigration())
 		{
@@ -116,6 +116,20 @@ public sealed class Plugin : BaseUnityPlugin
 			{
 				SortOpenChest();
 			}
+		}
+	}
+
+	private static readonly System.Diagnostics.Stopwatch UpdateTimer = new System.Diagnostics.Stopwatch();
+
+	/// <summary>Freeze diagnostics: name the subsystem when one frame step runs long.</summary>
+	private void Timed(string name, Action step)
+	{
+		UpdateTimer.Restart();
+		step();
+		UpdateTimer.Stop();
+		if (UpdateTimer.ElapsedMilliseconds > 100)
+		{
+			Logger.LogWarning((object)$"Slow frame step {name}: {UpdateTimer.ElapsedMilliseconds} ms");
 		}
 	}
 

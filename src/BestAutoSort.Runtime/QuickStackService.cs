@@ -111,17 +111,7 @@ internal sealed class QuickStackService
 		ChestStorageRule rule = ChestRuleStore.Read(chest);
 		foreach (ItemData item in new List<ItemData>(playerInv.GetAllItems()))
 		{
-			if (item == null || item.m_shared == null)
-				continue;
-			if (item.m_shared.m_questItem || !item.m_shared.m_autoStack)
-				continue;
-			if (((Humanoid)player).IsItemEquiped(item))
-				continue;
-			if (ModConfig.ProtectHotbar.Value && item.m_gridPos.y == 0)
-				continue;
-			if (ItemLockService.IsLocked(item) || RestockProfileService.IsTarget(item))
-				continue;
-			if (ModConfig.SkipCustomData.Value && CustomDataTags.HasForeignData(item))
+			if (!IsMovable(player, item))
 				continue;
 			if (!QuickStackTransfer.CanAcceptFromRule(rule, item, destNames, destCats))
 				continue;
@@ -131,6 +121,30 @@ internal sealed class QuickStackService
 		}
 		return result;
 	}
+
+	/// <summary>Player items quick-stack may move (shared by first pass and cascade).</summary>
+	private static bool IsMovable(Player player, ItemData item)
+	{
+		if (item == null || item.m_shared == null || item.m_stack <= 0)
+			return false;
+		if (item.m_shared.m_questItem || !item.m_shared.m_autoStack)
+			return false;
+		if (((Humanoid)player).IsItemEquiped(item))
+			return false;
+		if (ModConfig.ProtectHotbar.Value && item.m_gridPos.y == 0)
+			return false;
+		if (ItemLockService.IsLocked(item) || RestockProfileService.IsTarget(item))
+			return false;
+		if (ModConfig.SkipCustomData.Value && CustomDataTags.HasForeignData(item))
+			return false;
+		return true;
+	}
+
+	/// <summary>
+	/// Runaway guard: a session never needs more submits than chests x chunks.
+	/// Past this the cascade stops loudly instead of flooding the frame/network.
+	/// </summary>
+	private const int MaxSubmitsPerSession = 128;
 
 	private IEnumerator RequestStacking(int session)
 	{
@@ -249,7 +263,7 @@ internal sealed class QuickStackService
 						continue;
 					ItemData src = sent.SourceRef;
 					if (src == null || !playerInv.GetAllItems().Contains(src))
-						src = ResolveRemainder(playerInv, sent);
+						src = ResolveRemainder(player, playerInv, sent);
 					if (src == null)
 						continue;
 					TxOpItem op = ChestTxService.SnapshotAuto(src, rem < src.m_stack ? rem : src.m_stack);
@@ -258,6 +272,13 @@ internal sealed class QuickStackService
 				}
 				if (next.Items.Count == 0)
 					return;
+				if (session != _session)
+					return;
+				if (_submitted >= MaxSubmitsPerSession)
+				{
+					Plugin.LogInstance.LogWarning((object)("[ChestTX] quickstack cascade stopped: " + _submitted + " submits this session (runaway guard)"));
+					return;
+				}
 				for (int r = 0; r < rest.Count; r++)
 				{
 					Container target = rest[r];
@@ -290,7 +311,7 @@ internal sealed class QuickStackService
 		});
 	}
 
-	private static ItemData ResolveRemainder(Inventory playerInv, TxOpItem sent)
+	private static ItemData ResolveRemainder(Player player, Inventory playerInv, TxOpItem sent)
 	{
 		if (playerInv == null || sent == null || sent.Snapshot == null || sent.Snapshot.m_shared == null)
 			return null;
@@ -298,7 +319,9 @@ internal sealed class QuickStackService
 		int quality = sent.Snapshot.m_quality;
 		foreach (ItemData it in playerInv.GetAllItems())
 		{
-			if (it == null || it.m_shared == null || it.m_stack <= 0)
+			// Same filters as the first pass: a name match alone would cascade the
+			// hotbar, equipped, locked or restock-target stack of that item.
+			if (!IsMovable(player, it))
 				continue;
 			if (it.m_shared.m_name == name && (quality < 0 || it.m_quality == quality))
 				return it;

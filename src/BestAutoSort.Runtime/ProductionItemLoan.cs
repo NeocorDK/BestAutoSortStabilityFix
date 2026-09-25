@@ -52,7 +52,9 @@ internal sealed class ProductionItemLoan
 		}
 		if ((Object)(object)_source != (Object)null && _source.IsOwner())
 		{
-			_source.GetInventory().MoveItemToThis(inventory, _item, _item.m_stack, -1, -1);
+			// Auto-place overload: the positional one with (-1,-1) is always rejected
+			// by vanilla, so the loan never made it back to an owned chest.
+			_source.GetInventory().MoveItemToThis(inventory, _item);
 			// Owned chest mutated directly (no tx queue): persist like the manager.
 			TxReflect.UpdateRows(_source);
 			TxReflect.SaveContainer(_source);

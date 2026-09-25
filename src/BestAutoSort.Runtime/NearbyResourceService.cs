@@ -786,19 +786,20 @@ internal static bool HasStagedMatsForPiece(Player player, Piece piece, out strin
 	private static bool TryLoanOneItem(Inventory source, Inventory playerInventory, ItemData sourceItem, int playerCountBefore, out ItemData? loanedItem)
 	{
 		loanedItem = null;
-		playerInventory.MoveItemToThis(source, sourceItem, 1, -1, -1);
-		if (playerInventory.CountItems(sourceItem.m_shared.m_name, sourceItem.m_quality, true) > playerCountBefore)
-		{
-			loanedItem = playerInventory.GetItem(sourceItem.m_shared.m_name, sourceItem.m_quality, false);
-			return loanedItem != null;
-		}
+		// The loan must be its own 1-unit stack in a FREE cell. The former
+		// MoveItemToThis(.., -1, -1) never moved anything (vanilla rejects x<0), and
+		// the fallback forced the clone into (0,0) on top of whatever was there —
+		// with a full inventory that overlapped two stacks and lost one on save.
 		if (!source.GetAllItems().Contains(sourceItem))
 		{
 			return false;
 		}
 		ItemData val = sourceItem.Clone();
 		val.m_stack = 1;
-		val.m_gridPos = new Vector2i(0, 0);
+		if (!TryPlaceInFreePlayerSlot(playerInventory, val))
+		{
+			return false;
+		}
 		if (!source.RemoveItem(sourceItem, 1))
 		{
 			return false;

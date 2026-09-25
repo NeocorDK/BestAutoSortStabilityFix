@@ -539,6 +539,18 @@ internal static class InventoryButtons
 		((Object)val).name = name;
 		Button component = val.GetComponent<Button>();
 		((UnityEventBase)component.onClick).RemoveAllListeners();
+		// The template's gamepad hotkey (if any) would be cloned onto every button:
+		// one controller press would then submit Stack, Trash, Sort, Storage and the
+		// upgrades together. Strip the binding and its hint from clones.
+		UIGamePad[] gamePads = val.GetComponentsInChildren<UIGamePad>(true);
+		for (int i = 0; i < gamePads.Length; i++)
+		{
+			if ((Object)(object)gamePads[i].m_hint != (Object)null && gamePads[i].m_hint.transform.IsChildOf(val.transform))
+			{
+				gamePads[i].m_hint.SetActive(false);
+			}
+			Object.DestroyImmediate((Object)(object)gamePads[i]);
+		}
 		Localize[] componentsInChildren = val.GetComponentsInChildren<Localize>(true);
 		for (int i = 0; i < componentsInChildren.Length; i++)
 		{

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0-fix (unofficial stability patch, wire-compatible with 0.4.0)
+
+- **Stack freeze fixed.** Batches over 4 items now report once, aligned to the whole batch. Per-chunk completions were read by the quick-stack cascade as whole-batch results: every chunk re-sent nearly the whole inventory to the next chest, which split again (chunks^chests transactions; synchronous in one frame for owned chests). Full inventories hit it hardest.
+- Quick-stack cascade remainder respects hotbar/equipped/locked/restock filters; runaway guard (128 submits per session).
+- Restock is not started again while its previous chain is still running.
+- Pending-tx pump no longer mutates dictionaries under enumeration (InvalidOperationException out of `Update`); a chest destroyed mid-flight still completes its callback.
+
+- Owner-side chest loads (takeover, structural acquire, viewer refresh) run with `Container.m_loading` set: no more N saves / N ZDO revisions per load.
+- Commit writes the idempotency ring after recording the tx (last tx survives handoff) and resyncs `m_lastRevision` (no vanilla full reload after every commit).
+- Access/version rejects no longer surface as "applied but items unrecoverable".
+- `Submit` always answers its callback: restock / quick-stack / return chains no longer stall, compensation leftovers are no longer voided.
+- Full player inventory: compensation and drag leftovers are dropped at the player's feet instead of silently vanishing (`Humanoid.DropItem` on a non-inventory item drops nothing).
+- Production loans take a free cell only (no forced overlap at slot 0,0); loans return to owned chests again.
+- Dedicated server as chest manager: no `SetInUse` NRE.
+- Owner take results hand out clones, not the cached `ItemData`.
+- Cloned toolbar buttons drop the template's gamepad hotkey.
+- Freeze diagnostics: warnings for frame steps, tx applies and chest loads over 100 ms.
+
 ## 0.4.0
 
 - Legacy chests no longer shrink a larger runtime inventory applied by other mods (final = max(current, template), issue #8).

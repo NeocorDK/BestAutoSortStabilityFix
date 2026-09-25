@@ -1,0 +1,9 @@
+{
+  "name": "BestAutoSort_StabilityFix",
+  "version_number": "0.4.0",
+  "website_url": "",
+  "description": "Unofficial stability fork of maks2204's BestAutoSort 0.4.0: fixes the Stack freeze with a full inventory, item loss and chest sync issues. Replaces the original, do not install both.",
+  "dependencies": [
+    "denikson-BepInExPack_Valheim-5.4.2350"
+  ]
+}

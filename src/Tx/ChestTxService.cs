@@ -414,7 +414,7 @@ namespace BestAutoSort.Tx
                 byte[] bytes = netView.GetZDO().GetByteArray(ZDOVars.s_items);
                 if (bytes != null)
                 {
-                    container.GetInventory().Load(new ZPackage(bytes));
+                    TxReflect.LoadInventoryQuiet(container, new ZPackage(bytes));
                     TxReflect.SetLastRevision(container, netView.GetZDO().DataRevision);
                     TxReflect.UpdateRows(container);
                 }
@@ -498,6 +498,7 @@ namespace BestAutoSort.Tx
                     TellPlayer("Chest is busy (animal feeding in progress). Try again shortly.");
                 else
                     TellPlayer("Shared chest is not available.");
+                RejectEarly(container, onDone);
                 return;
             }
             if (container.IsOwner())
@@ -552,7 +553,9 @@ namespace BestAutoSort.Tx
             ZNetView netView = TxReflect.GetNetView(container);
             if ((Object)netView == (Object)null || !netView.IsValid())
             {
+                ReleaseClaimed(claimed);
                 TellPlayer("Shared chest is not available.");
+                RejectEarly(container, onDone);
                 return;
             }
             PendingTx pending = new PendingTx();
@@ -572,6 +575,25 @@ namespace BestAutoSort.Tx
             SendPayload(container, request);
             pending.Attempts = 1;
             pending.NextTryAt = Time.realtimeSinceStartup + RequestTimeout;
+        }
+
+        /// <summary>
+        /// Nothing was sent, nothing applied: still answer the caller (empty body reads
+        /// as accepted=0). Silent drops stalled restock/quick-stack/return chains and
+        /// voided compensation Adds whose leftover restore lives in the callback.
+        /// </summary>
+        private static void RejectEarly(Container container, Action<ZPackage, TxStatus, uint> onDone)
+        {
+            if (onDone == null)
+                return;
+            try
+            {
+                onDone(new ZPackage(), TxStatus.Rejected, CurrentRevision(container));
+            }
+            catch (Exception ex)
+            {
+                TxLog.Error("early-reject completion failed: " + ex.Message);
+            }
         }
 
         private static void SendPayload(Container container, ZPackage request)
@@ -854,9 +876,13 @@ namespace BestAutoSort.Tx
                     n++;
                     TxJob job = state.Queue.Dequeue();
                     StoredResult result;
+                    System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
                         result = ApplyJob(state, job);
+                        sw.Stop();
+                        if (sw.ElapsedMilliseconds > 100)
+                            TxLog.Warn("tx=" + job.TxId + " op=" + (job.Call != null ? job.Call.Op.ToString() : "?") + " slow apply: " + sw.ElapsedMilliseconds + " ms");
                     }
                     catch (Exception ex)
                     {
@@ -1190,7 +1216,6 @@ namespace BestAutoSort.Tx
                 // the manager lacks, and drops there get rejected).
                 TxReflect.UpdateRows(state.Container);
                 TxReflect.SaveContainer(state.Container);
-                WriteRing(state);
             }
             result.Revision = CurrentRevision(state.Container);
             state.Processed[job.TxId] = CloneStored(result, result.Status);
@@ -1200,6 +1225,15 @@ namespace BestAutoSort.Tx
                 long oldest = state.ProcOrder.First.Value;
                 state.ProcOrder.RemoveFirst();
                 state.Processed.Remove(oldest);
+            }
+            if (mutated)
+            {
+                // The ring must include THIS tx (written after Processed), otherwise a
+                // retry after handoff re-applies it. The ring write bumps DataRevision:
+                // resync m_lastRevision, or vanilla CheckForChanges reloads the whole
+                // chest from ZDO a second later and invalidates live ItemData refs.
+                WriteRing(state);
+                TxReflect.SetLastRevision(state.Container, CurrentRevision(state.Container));
             }
             TxLog.Info("container=" + TxLog.Zid(state.ZdoId) + " tx=" + job.TxId + " peer=" + job.Sender
                 + " op=" + job.Call.Op + " accepted=" + result.AcceptedTotal() + " revision=" + result.Revision);

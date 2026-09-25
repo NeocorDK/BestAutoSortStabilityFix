@@ -168,6 +168,26 @@ namespace BestAutoSort.Tx
                 return;
             }
             pkg = body;
+            if (totalsOnly && status == TxStatus.Rejected)
+            {
+                // Access/version rejects carry totalsOnly=true with an empty body:
+                // nothing was applied. Complete as a clean reject instead of the
+                // "applied but unrecoverable" branches below (issue #10 noise).
+                Pending.Remove(txId);
+                ReleaseClaimed(pending.Claimed);
+                TxLog.Info("tx=" + txId + " rejected by manager (nothing applied)");
+                try
+                {
+                    if (pending.OnResponse != null)
+                        pending.OnResponse(new ZPackage(), TxStatus.Rejected, revision);
+                }
+                catch (Exception ex)
+                {
+                    TxLog.Error("tx=" + txId + " reject completion failed: " + ex.Message);
+                }
+                RefreshNow(container);
+                return;
+            }
             if (totalsOnly && IsTakeOp(pending.Op))
             {
                 // Totals-only Take results after handoff carry no items: nothing to
@@ -428,12 +448,28 @@ namespace BestAutoSort.Tx
                 srcInv.m_onChanged?.Invoke();
                 return;
             }
-            // Inventory full: drop at feet rather than lose the items.
+            // Inventory full: drop at feet rather than lose the items. AddItem may
+            // have merged part of it: drop only what is still left in itemRef.
+            DropAtFeet(itemRef, "drag restore");
+        }
+
+        /// <summary>
+        /// Spawn an item that is NOT in any inventory at the local player's feet.
+        /// Humanoid.DropItem cannot be used for this: it first removes the item from
+        /// the inventory and silently returns false (nothing dropped) when absent.
+        /// </summary>
+        private static void DropAtFeet(ItemData item, string what)
+        {
+            if (item == null || item.m_stack <= 0)
+                return;
             Player player = Player.m_localPlayer;
-            if (player != null)
-                ((Humanoid)player).DropItem(srcInv, itemRef, restore);
-            else
-                TxLog.Error("drag restore failed: no player, items lost: " + restore);
+            if ((Object)player == (Object)null)
+            {
+                TxLog.Error(what + " failed: no player, items lost: " + item.m_stack);
+                return;
+            }
+            Transform t = ((Component)player).transform;
+            ItemDrop.DropItem(item, item.m_stack, t.position + t.forward + t.up, t.rotation);
         }
 
         private static void CompensateAddBack(Container container, TxOpItem sent, int amount)
@@ -628,10 +664,14 @@ namespace BestAutoSort.Tx
             ItemData rest = item.Clone();
             rest.m_stack = leftover;
             CustomDataTags.StripBenign(rest);
-            if (TxInventory.AddAndCount(playerInv, rest) < leftover)
+            int added = TxInventory.AddAndCount(playerInv, rest);
+            if (added < leftover)
             {
-                ((Humanoid)player).DropItem(playerInv, rest, leftover);
-                TxLog.Warn("compensate leftover did not fit, dropped at feet: " + leftover);
+                // Only the unplaced remainder: AddAndCount may have merged part of it
+                // into partial stacks, leaving the rest in `rest`.
+                rest.m_stack = leftover - added;
+                DropAtFeet(rest, "compensate restore");
+                TxLog.Warn("compensate leftover did not fit, dropped at feet: " + (leftover - added));
             }
             else
             {
@@ -683,7 +723,9 @@ namespace BestAutoSort.Tx
                                 continue;
                             DecodedTake dt = new DecodedTake();
                             dt.PrefabHash = te.PrefabHash;
-                            dt.Item = te.Item;
+                            // Clone: te.Item also lives in the Processed cache (served
+                            // again on Duplicate/Query); consumers insert it into inventories.
+                            dt.Item = te.Item != null ? te.Item.Clone() : null;
                             dt.Accepted = te.Accepted;
                             direct.Add(dt);
                         }
@@ -734,21 +776,7 @@ namespace BestAutoSort.Tx
         {
             if (call != null && call.Items.Count > BatchChunkSize)
             {
-                // Split big batches: each chunk is an independent tx (own txId,
-                // own atomic commit). Disjoint item sets => the claim guard stays out.
-                // onDone fires per chunk (all current handlers tolerate repeats).
-                int i = 0;
-                while (i < call.Items.Count)
-                {
-                    TxOpCall part = new TxOpCall();
-                    part.Op = call.Op;
-                    part.EnforceRule = call.EnforceRule;
-                    part.RespectReserves = call.RespectReserves;
-                    for (int j = i; j < call.Items.Count && j < i + BatchChunkSize; j++)
-                        part.Items.Add(call.Items[j]);
-                    SubmitCallDetailed(container, part, srcInv, onDone);
-                    i += BatchChunkSize;
-                }
+                SubmitChunked(container, call, srcInv, onDone);
                 return;
             }
             if (container.IsOwner())
@@ -780,6 +808,74 @@ namespace BestAutoSort.Tx
                 if (onDone != null)
                     onDone(records, accepted, status);
             }, 0L, null, call.Items.Count);
+        }
+
+        /// <summary>
+        /// Split a big batch into independent chunk txs (own txId, own atomic commit)
+        /// but answer the caller ONCE, with accepted counts aligned to call.Items.
+        /// Per-chunk completions used to be handed to callers that index the FULL call
+        /// (quick-stack cascade): counts were misattributed, every chunk re-cascaded
+        /// nearly the whole inventory to the next chest, and each of those split again
+        /// — chunks^chests submits. With owned chests all of it runs synchronously in
+        /// one frame: the game freezes until the server drops the connection.
+        /// Items pruned by the in-flight guard are dropped from call.Items, exactly as
+        /// on the unchunked path.
+        /// </summary>
+        private static void SubmitChunked(Container container, TxOpCall call, Inventory srcInv, Action<List<TransferRecord>, List<int>, TxStatus> onDone)
+        {
+            List<TxOpCall> parts = new List<TxOpCall>();
+            for (int i = 0; i < call.Items.Count; i += BatchChunkSize)
+            {
+                TxOpCall part = new TxOpCall();
+                part.Op = call.Op;
+                part.EnforceRule = call.EnforceRule;
+                part.RespectReserves = call.RespectReserves;
+                for (int j = i; j < call.Items.Count && j < i + BatchChunkSize; j++)
+                    part.Items.Add(call.Items[j]);
+                parts.Add(part);
+            }
+            List<int>[] partAccepted = new List<int>[parts.Count];
+            List<TransferRecord> allRecords = new List<TransferRecord>();
+            int left = parts.Count;
+            bool anyUnknown = false;
+            for (int p = 0; p < parts.Count; p++)
+            {
+                int index = p;
+                SubmitCallDetailed(container, parts[index], srcInv, delegate (List<TransferRecord> records, List<int> accepted, TxStatus status)
+                {
+                    if (partAccepted[index] != null)
+                        return;
+                    partAccepted[index] = accepted ?? new List<int>();
+                    if (records != null)
+                        allRecords.AddRange(records);
+                    if (status == TxStatus.UnknownTx)
+                        anyUnknown = true;
+                    left--;
+                    if (left > 0)
+                        return;
+                    call.Items.Clear();
+                    List<int> acc = new List<int>();
+                    int total = 0;
+                    bool all = true;
+                    for (int q = 0; q < parts.Count; q++)
+                    {
+                        for (int k = 0; k < parts[q].Items.Count; k++)
+                        {
+                            TxOpItem item = parts[q].Items[k];
+                            int got = k < partAccepted[q].Count ? partAccepted[q][k] : 0;
+                            call.Items.Add(item);
+                            acc.Add(got);
+                            total += got;
+                            if (got < item.Amount)
+                                all = false;
+                        }
+                    }
+                    TxStatus st = anyUnknown ? TxStatus.UnknownTx
+                        : (total == 0 ? TxStatus.Rejected : (all ? TxStatus.Accepted : TxStatus.Partial));
+                    if (onDone != null)
+                        onDone(allRecords, acc, st);
+                });
+            }
         }
 
         private static List<TransferRecord> FinishBatchCompletion(Container container, Inventory srcInv, TxOpCall call, StoredResult r)
@@ -816,9 +912,13 @@ namespace BestAutoSort.Tx
                 return;
             float now = Time.realtimeSinceStartup;
             List<long> done = null;
-            foreach (KeyValuePair<long, PendingTx> kv in Pending)
+            // Snapshot: FinalizeUnknownTx removes from Pending and its completion may
+            // Submit new txs — mutating the dictionary under a live enumerator throws.
+            foreach (KeyValuePair<long, PendingTx> kv in new List<KeyValuePair<long, PendingTx>>(Pending))
             {
                 PendingTx p = kv.Value;
+                if (!Pending.ContainsKey(kv.Key))
+                    continue;
                 if ((Object)p.Container == (Object)null)
                 {
                     if (done == null)
@@ -867,7 +967,25 @@ namespace BestAutoSort.Tx
             }
             if (done != null)
                 for (int i = 0; i < done.Count; i++)
+                {
+                    PendingTx gone;
+                    if (!Pending.TryGetValue(done[i], out gone))
+                        continue;
                     Pending.Remove(done[i]);
+                    // Chest object gone mid-flight: still answer (indeterminate), or
+                    // chains waiting on this completion (restock, cascade) stall forever.
+                    if ((Object)gone.Container == (Object)null && gone.OnResponse != null)
+                    {
+                        try
+                        {
+                            gone.OnResponse(null, TxStatus.UnknownTx, 0u);
+                        }
+                        catch (Exception ex)
+                        {
+                            TxLog.Error("tx=" + gone.TxId + " orphan completion failed: " + ex.Message);
+                        }
+                    }
+                }
         }
 
         private static void SendQuery(PendingTx p)
@@ -968,7 +1086,7 @@ namespace BestAutoSort.Tx
             try
             {
                 ZPackage pkg = bytes != null ? new ZPackage(bytes) : EmptyInventoryPackage(open);
-                open.GetInventory().Load(pkg);
+                TxReflect.LoadInventoryQuiet(open, pkg);
                 TxReflect.SetLastRevision(open, rev);
                 TxReflect.UpdateRows(open);
             }
@@ -1048,7 +1166,7 @@ namespace BestAutoSort.Tx
                 return;
             _nextSlowPump = Time.realtimeSinceStartup + SlowPump;
             List<int> dead = null;
-            foreach (KeyValuePair<int, ChestState> kv in States)
+            foreach (KeyValuePair<int, ChestState> kv in new List<KeyValuePair<int, ChestState>>(States))
             {
                 ChestState state = kv.Value;
                 if ((Object)state.Container == (Object)null)
@@ -1099,7 +1217,7 @@ namespace BestAutoSort.Tx
                 {
                     if (InventoryGui.instance != null)
                         TxReflect.CancelDragFrom(InventoryGui.instance, state.Container.GetInventory());
-                    state.Container.GetInventory().Load(new ZPackage(bytes));
+                    TxReflect.LoadInventoryQuiet(state.Container, new ZPackage(bytes));
                     TxReflect.SetLastRevision(state.Container, netView.GetZDO().DataRevision);
                     TxReflect.UpdateRows(state.Container);
                 }
@@ -1178,6 +1296,10 @@ namespace BestAutoSort.Tx
 
         private static void EnforceLid(ChestState state)
         {
+            // Headless (dedicated server as manager): vanilla SetInUse dereferences
+            // Player.m_localPlayer for its effects and throws after flipping m_inUse.
+            if ((Object)Player.m_localPlayer == (Object)null)
+                return;
             try
             {
                 // Viewers plus the manager's own open GUI (otherwise flips
