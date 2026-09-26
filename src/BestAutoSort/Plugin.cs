@@ -95,6 +95,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
+		Timed("ConfigSync.Pump", ConfigSync.Pump);
 		Timed("ChestTxService.Pump", ChestTxService.Pump);
 		Timed("AutoFeedService.Update", AutoFeedService.Update);
 		Timed("NearbyPlaceIntent.Pump", NearbyPlaceIntent.Pump);
@@ -291,6 +292,7 @@ public sealed class Plugin : BaseUnityPlugin
 		QuickStackService?.Reset();
 		ChestTxService.Reset();
 		TxNet.Reset();
+		ConfigSync.Shutdown();
 		AutoFeedService.Reset();
 		InventoryButtons.Detach();
 		TransferContext.End();

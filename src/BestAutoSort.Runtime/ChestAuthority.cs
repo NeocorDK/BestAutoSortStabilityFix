@@ -95,7 +95,7 @@ internal static class ChestAuthority
 			range = ModConfig.SharedResourceRange.Value;
 		if (ModConfig.AutoFeedRange.Value > range)
 			range = ModConfig.AutoFeedRange.Value;
-		return Mathf.Clamp(range, 4f, 100f);
+		return Mathf.Clamp(range, 4f, 150f);
 	}
 
 	internal static long CreatorOf(Container container)

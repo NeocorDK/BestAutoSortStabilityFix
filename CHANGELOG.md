@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1-fix (unofficial, package 0.4.1; plugin still reports 0.4.0)
+
+- Server-synced config: gameplay settings come from the server while connected (in memory only, the player's own .cfg is never rewritten; local values return on disconnect). Editing the server .cfg is picked up live and pushed to all players. Synced: Quick Stack range/containers/match mode/custom-data skip, Shared Resources (craft from chests + range), AllowConcurrentChestUse, Auto Feed (enabled/range/interval/prefix), kiln wood options. Keys, UI, sorting, visuals and debug stay personal.
+- Shared Resources `Range` (crafting, building, fuel from chests) now goes up to 150 m (was 100). The chest-manager access check follows (clamp 150 m). Quick Stack and Auto Feed limits unchanged.
+
 ## 0.4.0-fix (unofficial stability patch, wire-compatible with 0.4.0)
 
 - **Stack freeze fixed.** Batches over 4 items now report once, aligned to the whole batch. Per-chunk completions were read by the quick-stack cascade as whole-batch results: every chunk re-sent nearly the whole inventory to the next chest, which split again (chunks^chests transactions; synchronous in one frame for owned chests). Full inventories hit it hardest.
